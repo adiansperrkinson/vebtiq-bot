@@ -135,19 +135,153 @@ async function getForecast(colors, forecastLength, chatId) {
             )
         );
 
+async function getForecast(colors, forecastLength, chatId) {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
+  });
+
+  const sendStep = async (page, stepName) => {
+    try {
+      const ss = await page.screenshot({
+        type: 'png',
+        fullPage: false,
+      });
+
+      await bot.sendPhoto(chatId, ss, {
+        caption: `🔍 ${stepName}`,
+      });
+
+    } catch (err) {
+      console.error('Screenshot gagal:', err.message);
+    }
+  };
+
+  try {
+    const page = await browser.newPage();
+
+    await page.setViewport({
+      width: 1366,
+      height: 900,
+    });
+
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
+    );
+
+    // ─────────────────────────────
+    // BUKA WEBSITE
+    // ─────────────────────────────
+    await page.goto(
+      'https://vebtiq.com/flexible-pattern/forecast',
+      {
+        waitUntil: 'networkidle2',
+        timeout: 60000,
+      }
+    );
+
+    await sendStep(page, 'Halaman terbuka');
+
+    const patternLength = colors.length;
+
+    // ─────────────────────────────
+    // PILIH PATTERN LENGTH
+    // ─────────────────────────────
+    await page.evaluate((pLen) => {
+      const selects = [...document.querySelectorAll('select')];
+
+      for (const sel of selects) {
+        const found = [...sel.options].find(
+          o =>
+            o.value == pLen ||
+            o.textContent.includes(String(pLen))
+        );
+
+        if (found) {
+          sel.value = found.value;
+
+          sel.dispatchEvent(
+            new Event('input', { bubbles: true })
+          );
+
+          sel.dispatchEvent(
+            new Event('change', { bubbles: true })
+          );
+
+          break;
+        }
+      }
+    }, patternLength);
+
+    await new Promise(r => setTimeout(r, 2000));
+
+    await sendStep(
+      page,
+      `Pattern Length ${patternLength}`
+    );
+
+    // ─────────────────────────────
+    // INPUT WARNA CANDLE
+    // ─────────────────────────────
+    const colorInputs = await page.$$(
+      'input[type="text"]'
+    );
+
+    if (colorInputs.length >= patternLength) {
+
+      for (let i = 0; i < patternLength; i++) {
+
+        const input = colorInputs[i];
+
+        await input.click({ clickCount: 3 });
+
+        await page.keyboard.press('Backspace');
+
+        await input.type(colors[i], {
+          delay: 100,
+        });
+
+        await new Promise(r => setTimeout(r, 150));
+      }
+
+    } else {
+
+      // fallback pakai select
+      const allSelects = await page.$$('select');
+
+      let colorIndex = 0;
+
+      for (const sel of allSelects) {
+
+        const options = await sel.$$eval(
+          'option',
+          opts =>
+            opts.map(o =>
+              o.textContent.toLowerCase()
+            )
+        );
+
         if (
           options.includes('green') ||
           options.includes('red')
         ) {
+
           if (colors[colorIndex]) {
+
             await sel.select(colors[colorIndex]);
+
             colorIndex++;
           }
         }
       }
     }
 
-    await page.waitForTimeout(1500);
+    await new Promise(r => setTimeout(r, 1500));
 
     await sendStep(
       page,
@@ -164,22 +298,28 @@ async function getForecast(colors, forecastLength, chatId) {
     let radioClicked = false;
 
     for (const radio of radios) {
+
       const value = await page.evaluate(
         el => el.value,
         radio
       );
 
       if (String(value) === String(forecastLength)) {
+
         await radio.click();
+
         radioClicked = true;
+
         break;
       }
     }
 
     if (!radioClicked) {
+
       const selects = await page.$$('select');
 
       for (const sel of selects) {
+
         const options = await sel.$$eval(
           'option',
           opts =>
@@ -198,13 +338,15 @@ async function getForecast(colors, forecastLength, chatId) {
         );
 
         if (found) {
+
           await sel.select(found.value);
+
           break;
         }
       }
     }
 
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1000));
 
     await sendStep(
       page,
@@ -212,13 +354,14 @@ async function getForecast(colors, forecastLength, chatId) {
     );
 
     // ─────────────────────────────
-    // CARI TOMBOL FORECAST
+    // CARI & KLIK TOMBOL FORECAST
     // ─────────────────────────────
     const buttons = await page.$$('button');
 
     let clicked = false;
 
     for (const btn of buttons) {
+
       const text = await page.evaluate(
         el => el.innerText.toLowerCase(),
         btn
@@ -231,6 +374,7 @@ async function getForecast(colors, forecastLength, chatId) {
         text.includes('predict') ||
         text.includes('next candle')
       ) {
+
         await btn.evaluate(el => {
           el.scrollIntoView({
             behavior: 'smooth',
@@ -238,7 +382,7 @@ async function getForecast(colors, forecastLength, chatId) {
           });
         });
 
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1000));
 
         await btn.click();
 
@@ -253,6 +397,7 @@ async function getForecast(colors, forecastLength, chatId) {
     }
 
     if (!clicked) {
+
       throw new Error(
         'Tombol Forecast tidak ditemukan'
       );
@@ -261,13 +406,13 @@ async function getForecast(colors, forecastLength, chatId) {
     // ─────────────────────────────
     // TUNGGU HASIL
     // ─────────────────────────────
-    await page.waitForTimeout(7000);
+    await new Promise(r => setTimeout(r, 7000));
 
     await page.evaluate(() => {
       window.scrollBy(0, 700);
     });
 
-    await page.waitForTimeout(1500);
+    await new Promise(r => setTimeout(r, 1500));
 
     await sendStep(
       page,
@@ -277,11 +422,13 @@ async function getForecast(colors, forecastLength, chatId) {
     return true;
 
   } catch (err) {
+
     console.error(err);
 
     throw err;
 
   } finally {
+
     await browser.close();
   }
 }
