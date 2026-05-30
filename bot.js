@@ -204,7 +204,7 @@ async function getForecast(colors, forecastLength, chatId) {
       }
     }
 
-    await page.waitForTimeout(1000);
+    await new Promise(r => setTimeout(r, 2000));
 
     await sendStep(
       page,
@@ -238,7 +238,7 @@ async function getForecast(colors, forecastLength, chatId) {
           });
         });
 
-        await page.waitForTimeout(1000);
+        await new Promise(r => setTimeout(r, 2000));
 
         await btn.click();
 
