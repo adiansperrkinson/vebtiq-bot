@@ -92,7 +92,7 @@ async function getForecast(colors, forecastLength, chatId) {
       }
     }, patternLength);
 
-    await page.waitForTimeout(2000);
+    await new Promise(r => setTimeout(r, 2000));
 
     await sendStep(
       page,
@@ -118,7 +118,7 @@ async function getForecast(colors, forecastLength, chatId) {
           delay: 100,
         });
 
-        await page.waitForTimeout(150);
+        await new Promise(r => setTimeout(r, 2000));
       }
     } else {
       // fallback
