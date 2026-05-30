@@ -17,100 +17,269 @@ const sessions = {};
 async function getForecast(colors, forecastLength, chatId) {
   const browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
   });
+
+  const sendStep = async (page, stepName) => {
+    const ss = await page.screenshot({
+      type: 'png',
+      fullPage: true,
+    });
+
+    await bot.sendPhoto(chatId, ss, {
+      caption: `🔍 ${stepName}`,
+    });
+  };
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
-    // ── Buka halaman ──
-    await page.goto('https://vebtiq.com/flexible-pattern/forecast', {
-      waitUntil: 'networkidle2',
-      timeout: 30000,
+    await page.setViewport({
+      width: 1366,
+      height: 900,
     });
-    await new Promise(r => setTimeout(r, 1000));
+
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
+    );
+
+    // ─────────────────────────────
+    // BUKA WEBSITE
+    // ─────────────────────────────
+    await page.goto(
+      'https://vebtiq.com/flexible-pattern/forecast',
+      {
+        waitUntil: 'networkidle2',
+        timeout: 60000,
+      }
+    );
+
+    await sendStep(page, 'Halaman terbuka');
 
     const patternLength = colors.length;
-    const colorString = colors.join('-');
 
-    // ── Pilih Pattern Length (select pertama) ──
-    // Nilai option-nya kemungkinan "5", "6", dst
+    // ─────────────────────────────
+    // PILIH PATTERN LENGTH
+    // ─────────────────────────────
     await page.evaluate((pLen) => {
-      const selects = document.querySelectorAll('select');
-      const sel = selects[0]; // select pertama = Pattern Length
-      if (!sel) return;
+      const selects = [...document.querySelectorAll('select')];
 
-      // Coba set by value langsung
-      for (const opt of sel.options) {
-        if (
-          opt.value == pLen ||
-          opt.text.trim().startsWith(String(pLen))
-        ) {
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          return;
+      for (const sel of selects) {
+        const found = [...sel.options].find(
+          o =>
+            o.value == pLen ||
+            o.textContent.includes(String(pLen))
+        );
+
+        if (found) {
+          sel.value = found.value;
+
+          sel.dispatchEvent(
+            new Event('input', { bubbles: true })
+          );
+
+          sel.dispatchEvent(
+            new Event('change', { bubbles: true })
+          );
+
+          break;
         }
       }
     }, patternLength);
 
-    await new Promise(r => setTimeout(r, 800));
+    await page.waitForTimeout(2000);
 
-    // ── Pilih Forecast Length (select kedua) ──
-    await page.evaluate((fLen) => {
-      const selects = document.querySelectorAll('select');
-      const sel = selects[1]; // select kedua = Forecast Length
-      if (!sel) return;
+    await sendStep(
+      page,
+      `Pattern Length ${patternLength}`
+    );
 
-      for (const opt of sel.options) {
+    // ─────────────────────────────
+    // INPUT WARNA CANDLE
+    // ─────────────────────────────
+    const colorInputs = await page.$$(
+      'input[type="text"]'
+    );
+
+    if (colorInputs.length >= patternLength) {
+      for (let i = 0; i < patternLength; i++) {
+        const input = colorInputs[i];
+
+        await input.click({ clickCount: 3 });
+
+        await page.keyboard.press('Backspace');
+
+        await input.type(colors[i], {
+          delay: 100,
+        });
+
+        await page.waitForTimeout(150);
+      }
+    } else {
+      // fallback
+      const allSelects = await page.$$('select');
+
+      let colorIndex = 0;
+
+      for (const sel of allSelects) {
+        const options = await sel.$$eval(
+          'option',
+          opts =>
+            opts.map(o =>
+              o.textContent.toLowerCase()
+            )
+        );
+
         if (
-          opt.value == fLen ||
-          opt.text.trim().startsWith(String(fLen))
+          options.includes('green') ||
+          options.includes('red')
         ) {
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          return;
+          if (colors[colorIndex]) {
+            await sel.select(colors[colorIndex]);
+            colorIndex++;
+          }
         }
       }
-    }, forecastLength);
+    }
 
-    await new Promise(r => setTimeout(r, 500));
+    await page.waitForTimeout(1500);
 
-    // ── Isi textarea warna candle ──
-    await page.evaluate((colorStr) => {
-      const textarea = document.querySelector('textarea');
-      if (textarea) {
-        textarea.value = colorStr;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    await sendStep(
+      page,
+      'Warna candle sudah diisi'
+    );
+
+    // ─────────────────────────────
+    // FORECAST LENGTH
+    // ─────────────────────────────
+    const radios = await page.$$(
+      'input[type="radio"]'
+    );
+
+    let radioClicked = false;
+
+    for (const radio of radios) {
+      const value = await page.evaluate(
+        el => el.value,
+        radio
+      );
+
+      if (String(value) === String(forecastLength)) {
+        await radio.click();
+        radioClicked = true;
+        break;
       }
-    }, colorString);
+    }
 
-    await new Promise(r => setTimeout(r, 500));
+    if (!radioClicked) {
+      const selects = await page.$$('select');
 
-    // ── Klik "Forecast Next Candles" ──
+      for (const sel of selects) {
+        const options = await sel.$$eval(
+          'option',
+          opts =>
+            opts.map(o => ({
+              value: o.value,
+              text: o.textContent,
+            }))
+        );
+
+        const found = options.find(
+          o =>
+            o.value == forecastLength ||
+            o.text.includes(
+              `${forecastLength}`
+            )
+        );
+
+        if (found) {
+          await sel.select(found.value);
+          break;
+        }
+      }
+    }
+
+    await page.waitForTimeout(1000);
+
+    await sendStep(
+      page,
+      `Forecast Length ${forecastLength}`
+    );
+
+    // ─────────────────────────────
+    // CARI TOMBOL FORECAST
+    // ─────────────────────────────
+    const buttons = await page.$$('button');
+
+    let clicked = false;
+
+    for (const btn of buttons) {
+      const text = await page.evaluate(
+        el => el.innerText.toLowerCase(),
+        btn
+      );
+
+      console.log('BUTTON:', text);
+
+      if (
+        text.includes('forecast') ||
+        text.includes('predict') ||
+        text.includes('next candle')
+      ) {
+        await btn.evaluate(el => {
+          el.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+        });
+
+        await page.waitForTimeout(1000);
+
+        await btn.click();
+
+        clicked = true;
+
+        console.log(
+          '✅ Forecast button clicked'
+        );
+
+        break;
+      }
+    }
+
+    if (!clicked) {
+      throw new Error(
+        'Tombol Forecast tidak ditemukan'
+      );
+    }
+
+    // ─────────────────────────────
+    // TUNGGU HASIL
+    // ─────────────────────────────
+    await page.waitForTimeout(7000);
+
     await page.evaluate(() => {
-      const buttons = document.querySelectorAll('button, input[type="submit"], a[role="button"]');
-      for (const btn of buttons) {
-        const text = (btn.textContent || btn.value || '').toLowerCase();
-        if (text.includes('forecast next') || text.includes('forecast')) {
-          btn.click();
-          return;
-        }
-      }
+      window.scrollBy(0, 700);
     });
 
-    // Tunggu hasil muncul (sampai 10 detik)
-    await new Promise(r => setTimeout(r, 8000));
+    await page.waitForTimeout(1500);
 
-    // Scroll ke bawah untuk pastikan hasil terlihat
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await new Promise(r => setTimeout(r, 1000));
+    await sendStep(
+      page,
+      '✅ HASIL FORECAST'
+    );
 
-    // Screenshot hasil
-    const screenshot = await page.screenshot({ type: 'png', fullPage: true });
-    return screenshot;
+    return true;
+
+  } catch (err) {
+    console.error(err);
+
+    throw err;
 
   } finally {
     await browser.close();
