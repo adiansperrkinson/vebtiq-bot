@@ -12,148 +12,173 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sessions = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FUNGSI UTAMA: Buka VEBTiQ → isi form → screenshot hasil
+// FUNGSI UTAMA
 // ─────────────────────────────────────────────────────────────────────────────
-async function getForecastScreenshot(colors, forecastLength) {
+async function getForecast(colors, forecastLength, chatId) {
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
+
+  const sendStep = async (page, stepName) => {
+    const ss = await page.screenshot({ type: 'png', fullPage: true });
+    await bot.sendPhoto(chatId, ss, { caption: `🔍 Debug: ${stepName}` });
+  };
 
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
-    console.log('🌐 Membuka VEBTiQ...');
+    // ── Langkah 1: Buka halaman ──
     await page.goto('https://vebtiq.com/flexible-pattern/forecast', {
       waitUntil: 'networkidle2',
       timeout: 30000,
     });
-
-    // Dump semua selector yang ada di halaman untuk debug
-    const pageInfo = await page.evaluate(() => {
-      const selects = Array.from(document.querySelectorAll('select')).map(s => ({
-        tag: 'select', id: s.id, name: s.name, class: s.className,
-        options: Array.from(s.options).map(o => ({ value: o.value, text: o.text }))
-      }));
-      const inputs = Array.from(document.querySelectorAll('input')).map(i => ({
-        tag: 'input', id: i.id, name: i.name, type: i.type, class: i.className, placeholder: i.placeholder
-      }));
-      const buttons = Array.from(document.querySelectorAll('button')).map(b => ({
-        tag: 'button', id: b.id, text: b.textContent.trim(), type: b.type, class: b.className
-      }));
-      return { selects, inputs, buttons };
-    });
-
-    console.log('📋 Page elements:', JSON.stringify(pageInfo, null, 2));
+    await sendStep(page, 'Halaman terbuka');
 
     const patternLength = colors.length;
     const colorString = colors.join('-');
 
-    // ── Pilih Pattern Length ──
-    if (pageInfo.selects.length > 0) {
-      const patternSelect = pageInfo.selects[0];
-      const matchingOption = patternSelect.options.find(o =>
-        o.value == patternLength || o.text.includes(String(patternLength))
-      );
-
-      if (matchingOption) {
-        const sel = patternSelect.id ? `#${patternSelect.id}` :
-                    patternSelect.name ? `select[name="${patternSelect.name}"]` : 'select';
-        await page.select(sel, matchingOption.value);
-        console.log(`✅ Pattern length dipilih: ${matchingOption.value}`);
+    // ── Langkah 2: Pilih Pattern Length ──
+    // Cari select yang punya option dengan angka patternLength
+    await page.evaluate((pLen) => {
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        for (const opt of sel.options) {
+          if (opt.value == pLen || opt.text.includes(String(pLen))) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            sel.dispatchEvent(new Event('input', { bubbles: true }));
+            break;
+          }
+        }
       }
+    }, patternLength);
+
+    await new Promise(r => setTimeout(r, 1500)); // tunggu input dinamis muncul
+    await sendStep(page, `Setelah pilih pattern length ${patternLength}`);
+
+    // ── Langkah 3: Isi warna candle ──
+    // Cek apakah ada banyak input (satu per candle) atau satu input teks
+    const inputInfo = await page.evaluate((colorStr, pLen) => {
+      const allInputs = document.querySelectorAll('input[type="text"], input:not([type]), input[type="color"]');
+      const results = [];
+      allInputs.forEach((inp, i) => {
+        results.push({ index: i, id: inp.id, name: inp.name, placeholder: inp.placeholder, value: inp.value, type: inp.type });
+      });
+
+      // Juga cari textarea
+      const textareas = document.querySelectorAll('textarea');
+      textareas.forEach((ta, i) => {
+        results.push({ index: i, tag: 'textarea', id: ta.id, name: ta.name, placeholder: ta.placeholder });
+      });
+
+      return results;
+    }, colorString, patternLength);
+
+    console.log('Input elements ditemukan:', JSON.stringify(inputInfo, null, 2));
+
+    const colorArray = colors; // ['green', 'red', 'green', ...]
+
+    if (inputInfo.length >= patternLength) {
+      // Kemungkinan ada input terpisah per candle
+      await page.evaluate((colorArr) => {
+        const inputs = document.querySelectorAll('input[type="text"], input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])');
+        colorArr.forEach((color, i) => {
+          if (inputs[i]) {
+            inputs[i].value = color;
+            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+            inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+      }, colorArray);
+    } else if (inputInfo.length === 1) {
+      // Satu input teks → isi dengan format green-red-green
+      const inp = inputInfo[0];
+      const sel = inp.id ? `#${inp.id}` : inp.name ? `input[name="${inp.name}"]` : 'input[type="text"]';
+      await page.click(sel, { clickCount: 3 });
+      await page.type(sel, colorString, { delay: 30 });
+    } else {
+      // Tidak ada input text → coba isi via select/dropdown per candle
+      await page.evaluate((colorArr) => {
+        const selects = document.querySelectorAll('select');
+        // Skip select pertama (pattern length) dan kedua mungkin forecast length
+        let offset = 0;
+        for (let i = 0; i < selects.length; i++) {
+          // Cek apakah select ini untuk warna candle
+          const opts = Array.from(selects[i].options).map(o => o.value.toLowerCase());
+          if (opts.includes('green') || opts.includes('red')) {
+            const colorIdx = i - offset;
+            if (colorArr[colorIdx]) {
+              selects[i].value = colorArr[colorIdx];
+              selects[i].dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          } else {
+            offset++;
+          }
+        }
+      }, colorArray);
     }
 
     await new Promise(r => setTimeout(r, 800));
+    await sendStep(page, 'Setelah isi warna candle');
 
-    // ── Pilih Forecast Length ──
-    // Coba radio buttons dulu
-    const radioClicked = await page.evaluate((fLen) => {
+    // ── Langkah 4: Pilih Forecast Length ──
+    await page.evaluate((fLen) => {
+      // Coba radio button
       const radios = document.querySelectorAll('input[type="radio"]');
-      // Radio ke-N (index forecastLength - 1)
-      if (radios[fLen - 1]) { radios[fLen - 1].click(); return true; }
-      // Atau cari by value
       for (const r of radios) {
-        if (r.value == fLen) { r.click(); return true; }
+        if (r.value == fLen) { r.click(); return; }
       }
-      return false;
+      // Coba radio ke-index
+      if (radios[fLen - 1]) { radios[fLen - 1].click(); return; }
+
+      // Coba select untuk forecast
+      const selects = document.querySelectorAll('select');
+      for (const sel of selects) {
+        for (const opt of sel.options) {
+          if (opt.value == fLen || opt.text.includes(`${fLen} Candle`)) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            return;
+          }
+        }
+      }
     }, forecastLength);
 
-    if (!radioClicked && pageInfo.selects.length > 1) {
-      const fSelect = pageInfo.selects[1];
-      const sel = fSelect.id ? `#${fSelect.id}` :
-                  fSelect.name ? `select[name="${fSelect.name}"]` : 'select:nth-of-type(2)';
-      const fOption = fSelect.options.find(o => o.value == forecastLength || o.text.includes(String(forecastLength)));
-      if (fOption) await page.select(sel, fOption.value);
-    }
-
     await new Promise(r => setTimeout(r, 500));
 
-    // ── Isi Input Warna ──
-    const textInput = pageInfo.inputs.find(i =>
-      i.type === 'text' || i.type === '' || i.type === undefined
-    );
-
-    if (textInput) {
-      const inputSel = textInput.id ? `#${textInput.id}` :
-                       textInput.name ? `input[name="${textInput.name}"]` : 'input[type="text"]';
-      await page.click(inputSel, { clickCount: 3 });
-      await page.type(inputSel, colorString, { delay: 20 });
-      console.log(`✅ Input diisi: ${colorString}`);
-    } else {
-      // Fallback: isi semua input text
-      await page.evaluate((colorStr) => {
-        const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-        if (inputs.length > 0) {
-          const last = inputs[inputs.length - 1];
-          last.value = colorStr;
-          last.dispatchEvent(new Event('input', { bubbles: true }));
-          last.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }, colorString);
-    }
-
-    await new Promise(r => setTimeout(r, 500));
-
-    // ── Klik Tombol Forecast ──
-    const clicked = await page.evaluate(() => {
-      const buttons = document.querySelectorAll('button, input[type="submit"]');
+    // ── Langkah 5: Klik Forecast Button ──
+    await page.evaluate(() => {
+      const buttons = document.querySelectorAll('button, input[type="submit"], a');
       for (const btn of buttons) {
         const text = (btn.textContent || btn.value || '').toLowerCase();
-        if (text.includes('forecast') || text.includes('predict') || text.includes('submit')) {
+        if (text.includes('forecast') || text.includes('predict') || text.includes('next candle')) {
           btn.click();
-          return btn.textContent || btn.value;
+          return;
         }
       }
-      // Klik button terakhir sebagai fallback
-      if (buttons.length > 0) {
-        buttons[buttons.length - 1].click();
-        return 'last button';
+      // Fallback: klik semua button yang bukan reset/cancel
+      for (const btn of buttons) {
+        const text = (btn.textContent || btn.value || '').toLowerCase();
+        if (!text.includes('reset') && !text.includes('cancel') && !text.includes('example')) {
+          if (btn.tagName === 'BUTTON' || btn.type === 'submit') {
+            btn.click();
+            return;
+          }
+        }
       }
-      return null;
     });
 
-    console.log(`✅ Tombol diklik: ${clicked}`);
-
-    // ── Tunggu hasil muncul ──
-    await new Promise(r => setTimeout(r, 4000));
-
-    // Scroll ke bawah untuk pastikan hasil terlihat
-    await page.evaluate(() => window.scrollBy(0, 400));
+    // Tunggu hasil muncul
+    await new Promise(r => setTimeout(r, 5000));
+    await page.evaluate(() => window.scrollBy(0, 500));
     await new Promise(r => setTimeout(r, 500));
 
-    // Screenshot full page
-    const screenshot = await page.screenshot({
-      type: 'png',
-      fullPage: true,
-    });
+    await sendStep(page, '✅ Setelah klik Forecast — INI HASILNYA');
 
-    // Ambil juga teks hasil untuk parsing
-    const resultText = await page.evaluate(() => document.body.innerText);
-
-    return { screenshot, resultText };
+    return true;
 
   } finally {
     await browser.close();
@@ -161,7 +186,7 @@ async function getForecastScreenshot(colors, forecastLength) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER FUNCTIONS
+// HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 function parseColors(input) {
   const normalized = input.trim().toLowerCase().replace(/\s+/g, '-');
@@ -178,28 +203,17 @@ function parseColors(input) {
   return mapped;
 }
 
-function candleEmoji(color) {
-  return color.toLowerCase().includes('green') ? '🟢' : '🔴';
-}
-
 function showPattern(colors) {
-  return colors.map(candleEmoji).join('');
+  return colors.map(c => c.includes('green') ? '🟢' : '🔴').join('');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BOT COMMANDS
 // ─────────────────────────────────────────────────────────────────────────────
 bot.onText(/\/start/, (msg) => {
-  const name = msg.from.first_name || 'Trader';
   bot.sendMessage(msg.chat.id,
-    `👋 Halo *${name}*!\n\n` +
-    `Selamat datang di *VEBTiQ Forecast Bot* 🕯️\n\n` +
-    `Ketik /forecast untuk mulai prediksi candle.\n\n` +
-    `*Format input candle:*\n` +
-    `• \`green-red-green-red\`\n` +
-    `• \`g-r-g-r\`\n` +
-    `• \`GRGRG\`\n` +
-    `• \`hijau-merah-hijau\``,
+    `👋 Halo *${msg.from.first_name || 'Trader'}*!\n\n` +
+    `Bot VEBTiQ Forecast siap dipakai 🕯️\n\nKetik /forecast untuk mulai.`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -210,15 +224,13 @@ bot.onText(/\/cancel/, (msg) => {
 });
 
 bot.onText(/\/forecast/, (msg) => {
-  const chatId = msg.chat.id;
-  sessions[chatId] = { step: 'awaiting_colors' };
-  bot.sendMessage(chatId,
+  sessions[msg.chat.id] = { step: 'awaiting_colors' };
+  bot.sendMessage(msg.chat.id,
     `🕯️ *Masukkan Pola Candle*\n\n` +
     `Ketik *5–20* warna candle.\n\n` +
     `Contoh 10 candle:\n` +
     `\`green-red-green-red-green-red-green-red-green-red\`\n\n` +
-    `Atau singkatan: \`GRGRGRGRG R\`\n\n` +
-    `_Ketik /cancel untuk batal_`,
+    `Atau singkatan: \`GRGRGRGRG R\``,
     { parse_mode: 'Markdown' }
   );
 });
@@ -227,31 +239,19 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   if (!text || text.startsWith('/')) return;
-
   const session = sessions[chatId];
   if (!session) return;
 
   if (session.step === 'awaiting_colors') {
     const colors = parseColors(text);
-    if (!colors) {
-      return bot.sendMessage(chatId,
-        `❌ Format tidak dikenali!\n\nContoh: \`green-red-green-red-green\` atau \`GRGRG\``,
-        { parse_mode: 'Markdown' }
-      );
-    }
-    if (colors.length < 5 || colors.length > 20) {
-      return bot.sendMessage(chatId,
-        `❌ Harus *5–20* candle. Kamu input *${colors.length}* candle.`,
-        { parse_mode: 'Markdown' }
-      );
-    }
+    if (!colors) return bot.sendMessage(chatId, `❌ Format salah. Contoh: \`GRGRGRGRGRG\``, { parse_mode: 'Markdown' });
+    if (colors.length < 5 || colors.length > 20) return bot.sendMessage(chatId, `❌ Harus 5–20 candle. Kamu input ${colors.length}.`);
 
     sessions[chatId].colors = colors;
     sessions[chatId].step = 'awaiting_forecast_length';
 
     bot.sendMessage(chatId,
-      `✅ *Pola diterima (${colors.length} candles):*\n${showPattern(colors)}\n\n` +
-      `🔢 Mau prediksi berapa candle ke depan?`,
+      `✅ *Pola diterima (${colors.length} candles):*\n${showPattern(colors)}\n\nMau prediksi berapa candle ke depan?`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -275,60 +275,39 @@ bot.on('callback_query', async (query) => {
   if (data.startsWith('fl_')) {
     const forecastLength = parseInt(data.replace('fl_', ''));
     const session = sessions[chatId];
-
     if (!session?.colors) {
       bot.answerCallbackQuery(query.id, { text: 'Sesi expired. Ketik /forecast lagi.' });
       return;
     }
 
-    bot.answerCallbackQuery(query.id, { text: `⏳ Memproses ${forecastLength} candle...` });
-
-    const loadingMsg = await bot.sendMessage(chatId,
-      `⏳ *Sedang analisis...*\n\n` +
-      `${showPattern(session.colors)}\n\n` +
-      `_Membuka VEBTiQ dan mengisi form otomatis...\nTunggu 15–30 detik ya!_`,
-      { parse_mode: 'Markdown' }
-    );
-
+    bot.answerCallbackQuery(query.id, { text: `⏳ Memproses...` });
     const savedColors = session.colors;
     delete sessions[chatId];
 
+    await bot.sendMessage(chatId,
+      `⏳ *Sedang memproses...*\n${showPattern(savedColors)}\n\n_Kamu akan menerima beberapa screenshot debug. Screenshot terakhir = hasil forecast!_`,
+      { parse_mode: 'Markdown' }
+    );
+
     try {
-      const { screenshot, resultText } = await getForecastScreenshot(savedColors, forecastLength);
-
-      await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
-
-      // Kirim screenshot langsung — user lihat hasil persis seperti di web!
-      await bot.sendPhoto(chatId, screenshot, {
-        caption:
-          `📊 *Hasil VEBTiQ Forecast*\n` +
-          `Input: ${showPattern(savedColors)} (${savedColors.length} candles)\n` +
-          `Prediksi: ${forecastLength} candle ke depan`,
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '🔄 Prediksi Lagi', callback_data: 'restart' }
-          ]]
+      await getForecast(savedColors, forecastLength, chatId);
+      bot.sendMessage(chatId,
+        `✅ *Selesai!* Screenshot terakhir di atas adalah hasil forecast.\n\nMau prediksi lagi?`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '🔄 Prediksi Lagi', callback_data: 'restart' }]] }
         }
-      });
-
+      );
     } catch (err) {
       console.error('Error:', err.message);
-      await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
-      bot.sendMessage(chatId,
-        `❌ *Gagal mengambil hasil*\n\nError: ${err.message}\n\nCoba lagi: /forecast`,
-        { parse_mode: 'Markdown' }
-      );
+      bot.sendMessage(chatId, `❌ Error: ${err.message}\n\nCoba lagi: /forecast`);
     }
   }
 
   if (data === 'restart') {
     bot.answerCallbackQuery(query.id);
     sessions[chatId] = { step: 'awaiting_colors' };
-    bot.sendMessage(chatId,
-      `🕯️ *Masukkan Pola Candle Baru*\n\nKetik 5–20 warna candle:\n\`green-red-green-red-...\``,
-      { parse_mode: 'Markdown' }
-    );
+    bot.sendMessage(chatId, `🕯️ Ketik pola candle baru (5–20):\nContoh: \`GRGRGRGRG R\``, { parse_mode: 'Markdown' });
   }
 });
 
