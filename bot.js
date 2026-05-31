@@ -125,27 +125,28 @@ async function getForecast(colors, forecastLength) {
     const result = await resultPage.evaluate(() => {
       const bodyText = document.body.innerText;
 
-      // Prediksi cara 1: cari "#11 ... GREEN/RED"
+      // Cari bagian "Next X Candle(s) Forecast" → ambil GREEN/RED di sana
       const predictions = [];
-      const predRegex1 = /#(\d+)[\s\S]{0,30}?(GREEN|RED)/gi;
-      let match;
-      while ((match = predRegex1.exec(bodyText)) !== null) {
-        predictions.push({ candle: match[1], color: match[2].toUpperCase() });
-      }
 
-      // Prediksi cara 2: cari di sekitar "Next ... Forecast"
-      if (predictions.length === 0) {
-        const section = bodyText.match(/Next[\s\S]{0,200}?(GREEN|RED)/i);
-        if (section) predictions.push({ candle: '?', color: section[1].toUpperCase() });
-      }
+      // Potong teks mulai dari "Next X Candle(s) Forecast:"
+      const forecastSectionMatch = bodyText.match(/Next\s+\d+\s+Candle[\s\S]*/i);
+      const forecastSection = forecastSectionMatch ? forecastSectionMatch[0] : null;
 
-      // Prediksi cara 3: semua GREEN/RED setelah "Forecast Result"
-      if (predictions.length === 0) {
-        const afterForecast = bodyText.split(/Forecast Result/i)[1] || bodyText;
-        const colorMatches = afterForecast.match(/\b(GREEN|RED)\b/gi) || [];
+      if (forecastSection) {
+        // Ambil semua GREEN/RED di bagian forecast (bukan dari input)
+        const colorMatches = forecastSection.match(/\b(GREEN|RED)\b/gi) || [];
         colorMatches.forEach((color, i) => {
           predictions.push({ candle: String(i + 1), color: color.toUpperCase() });
         });
+      }
+
+      // Fallback: cari #angka lalu GREEN/RED, tapi hanya yang nomornya > panjang input
+      if (predictions.length === 0) {
+        const predRegex = /#(\d+)[^\n]{0,50}(GREEN|RED)/gi;
+        let match;
+        while ((match = predRegex.exec(bodyText)) !== null) {
+          predictions.push({ candle: match[1], color: match[2].toUpperCase() });
+        }
       }
 
       // Confidence
