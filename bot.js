@@ -12,7 +12,7 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sessions = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FUNGSI UTAMA: Buka VEBTiQ, isi form, ambil hasil sebagai teks
+// FUNGSI UTAMA
 // ─────────────────────────────────────────────────────────────────────────────
 async function getForecast(colors, forecastLength) {
   const browser = await puppeteer.launch({
@@ -34,7 +34,7 @@ async function getForecast(colors, forecastLength) {
     const patternLength = colors.length;
     const colorString = colors.join('-');
 
-    // ── Pilih Pattern Length (select pertama) ──
+    // ── Pilih Pattern Length ──
     await page.evaluate((pLen) => {
       const sel = document.querySelectorAll('select')[0];
       if (!sel) return;
@@ -49,7 +49,7 @@ async function getForecast(colors, forecastLength) {
 
     await new Promise(r => setTimeout(r, 800));
 
-    // ── Pilih Forecast Length (select kedua) ──
+    // ── Pilih Forecast Length ──
     await page.evaluate((fLen) => {
       const sel = document.querySelectorAll('select')[1];
       if (!sel) return;
@@ -76,6 +76,14 @@ async function getForecast(colors, forecastLength) {
 
     await new Promise(r => setTimeout(r, 500));
 
+    // ── Pasang listener untuk tab baru SEBELUM klik tombol ──
+    const newPagePromise = new Promise(resolve => {
+      browser.once('targetcreated', async (target) => {
+        const newPage = await target.page();
+        resolve(newPage);
+      });
+    });
+
     // ── Klik "Forecast Next Candles" ──
     await page.evaluate(() => {
       const buttons = document.querySelectorAll('button, input[type="submit"]');
@@ -88,28 +96,39 @@ async function getForecast(colors, forecastLength) {
       }
     });
 
-    // ── Tunggu halaman hasil muncul ──
-    // Tunggu sampai ada teks "Forecast Result" atau "Confidence"
+    // ── Tunggu tab baru terbuka (max 15 detik) ──
+    let resultPage;
     try {
-      await page.waitForFunction(
-        () => document.body.innerText.includes('Confidence') || 
+      resultPage = await Promise.race([
+        newPagePromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Tab baru tidak muncul')), 15000))
+      ]);
+    } catch {
+      // Kalau tidak ada tab baru, cek apakah hasil sudah muncul di halaman yang sama
+      resultPage = page;
+    }
+
+    // ── Tunggu halaman hasil selesai load ──
+    await resultPage.setViewport({ width: 1280, height: 900 });
+    try {
+      await resultPage.waitForFunction(
+        () => document.body.innerText.includes('Confidence') ||
               document.body.innerText.includes('Forecast Result'),
         { timeout: 15000 }
       );
     } catch {
-      await new Promise(r => setTimeout(r, 8000)); // fallback tunggu 8 detik
+      await new Promise(r => setTimeout(r, 8000));
     }
 
     await new Promise(r => setTimeout(r, 1000));
 
-    // ── Ekstrak hasil dari halaman ──
-    const result = await page.evaluate(() => {
+    // ── Ekstrak hasil ──
+    const result = await resultPage.evaluate(() => {
       const bodyText = document.body.innerText;
 
-      // Ambil semua prediksi candle (GREEN/RED per candle)
-      // Dari tampilan: "#11 ↑ GREEN" atau "#11 ↓ RED"
+      // Prediksi: cari pola "#11 GREEN" atau "#11 RED"
       const predictions = [];
-      const predRegex = /#(\d+)\s*[\u2191\u2193↑↓]?\s*(GREEN|RED)/gi;
+      const predRegex = /#(\d+)[^\n]*(GREEN|RED)/gi;
       let match;
       while ((match = predRegex.exec(bodyText)) !== null) {
         predictions.push({ candle: match[1], color: match[2].toUpperCase() });
@@ -119,15 +138,11 @@ async function getForecast(colors, forecastLength) {
       const confMatch = bodyText.match(/Confidence[:\s]+([\d.]+)%/i);
       const confidence = confMatch ? confMatch[1] : null;
 
-      // Jumlah matching patterns
+      // Matching patterns
       const matchingMatch = bodyText.match(/([\d,]+)\s*matching patterns/i);
       const matchingCount = matchingMatch ? matchingMatch[1] : null;
 
-      // Judul hasil (e.g. "Forecast Result (10+1 Pattern)")
-      const titleMatch = bodyText.match(/Forecast Result[^\n]*/i);
-      const title = titleMatch ? titleMatch[0].trim() : null;
-
-      return { predictions, confidence, matchingCount, title, raw: bodyText.slice(0, 2000) };
+      return { predictions, confidence, matchingCount };
     });
 
     return result;
@@ -138,10 +153,9 @@ async function getForecast(colors, forecastLength) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FORMAT HASIL JADI PESAN TELEGRAM
+// FORMAT HASIL
 // ─────────────────────────────────────────────────────────────────────────────
 function formatResult(result, inputColors, forecastLength) {
-  // Filter prediksi yang relevan saja (nomor candle > inputColors.length)
   const inputLen = inputColors.length;
   const predictions = result.predictions.filter(p => parseInt(p.candle) > inputLen);
 
@@ -156,25 +170,13 @@ function formatResult(result, inputColors, forecastLength) {
       msg += `Candle #${p.candle}: ${emoji} *${p.color}*\n`;
     });
   } else {
-    // Fallback: cari GREEN/RED sederhana dari raw text bagian bawah
-    const lines = result.raw.split('\n').filter(l => l.trim());
-    const colorLines = lines.filter(l => /^(GREEN|RED)$/i.test(l.trim()));
-    if (colorLines.length > 0) {
-      msg += `🔮 *Prediksi:*\n`;
-      colorLines.slice(0, forecastLength).forEach((l, i) => {
-        const color = l.trim().toUpperCase();
-        const emoji = color === 'GREEN' ? '🟢' : '🔴';
-        msg += `Candle ${i + 1}: ${emoji} *${color}*\n`;
-      });
-    } else {
-      msg += `⚠️ Tidak bisa parse hasil otomatis.\n`;
-    }
+    msg += `⚠️ Tidak bisa parse hasil. Coba lagi.\n`;
   }
 
   if (result.confidence) {
     const confNum = parseFloat(result.confidence);
-    const confBar = confNum >= 60 ? '🟩' : confNum >= 50 ? '🟨' : '🟥';
-    msg += `\n${confBar} *Confidence: ${result.confidence}%*`;
+    const bar = confNum >= 60 ? '🟩' : confNum >= 50 ? '🟨' : '🟥';
+    msg += `\n${bar} *Confidence: ${result.confidence}%*`;
   }
 
   if (result.matchingCount) {
@@ -211,8 +213,7 @@ function showPattern(colors) {
 // ─────────────────────────────────────────────────────────────────────────────
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `👋 Halo *${msg.from.first_name || 'Trader'}*!\n\n` +
-    `Bot VEBTiQ Forecast siap 🕯️\n\nKetik /forecast untuk mulai prediksi.`,
+    `👋 Halo *${msg.from.first_name || 'Trader'}*!\n\nBot VEBTiQ Forecast siap 🕯️\n\nKetik /forecast untuk mulai.`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -225,11 +226,7 @@ bot.onText(/\/cancel/, (msg) => {
 bot.onText(/\/forecast/, (msg) => {
   sessions[msg.chat.id] = { step: 'awaiting_colors' };
   bot.sendMessage(msg.chat.id,
-    `🕯️ *Masukkan Pola Candle*\n\n` +
-    `Ketik *5–20* warna candle.\n\n` +
-    `Contoh 10 candle:\n` +
-    `\`green-red-green-red-green-red-green-red-green-red\`\n\n` +
-    `Atau singkatan: \`GRGRGRGRGRG\``,
+    `🕯️ *Masukkan Pola Candle*\n\nKetik *5–20* warna candle.\n\nContoh:\n\`green-red-green-red-green-red-green-red-green-red\`\n\nAtau singkatan: \`GRGRGRGRGRG\``,
     { parse_mode: 'Markdown' }
   );
 });
@@ -243,18 +240,8 @@ bot.on('message', async (msg) => {
 
   if (session.step === 'awaiting_colors') {
     const colors = parseColors(text);
-    if (!colors) {
-      return bot.sendMessage(chatId,
-        `❌ Format tidak dikenali.\n\nContoh: \`green-red-green-red-green\` atau \`GRGRG\``,
-        { parse_mode: 'Markdown' }
-      );
-    }
-    if (colors.length < 5 || colors.length > 20) {
-      return bot.sendMessage(chatId,
-        `❌ Harus *5–20* candle. Kamu input *${colors.length}* candle.`,
-        { parse_mode: 'Markdown' }
-      );
-    }
+    if (!colors) return bot.sendMessage(chatId, `❌ Format salah.\n\nContoh: \`GRGRGRGRGRG\``, { parse_mode: 'Markdown' });
+    if (colors.length < 5 || colors.length > 20) return bot.sendMessage(chatId, `❌ Harus 5–20 candle. Kamu input ${colors.length}.`);
 
     sessions[chatId].colors = colors;
     sessions[chatId].step = 'awaiting_forecast_length';
@@ -303,12 +290,9 @@ bot.on('callback_query', async (query) => {
       await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
       const msg = formatResult(result, savedColors, forecastLength);
-
       await bot.sendMessage(chatId, msg, {
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '🔄 Prediksi Lagi', callback_data: 'restart' }]]
-        }
+        reply_markup: { inline_keyboard: [[{ text: '🔄 Prediksi Lagi', callback_data: 'restart' }]] }
       });
 
     } catch (err) {
@@ -321,10 +305,7 @@ bot.on('callback_query', async (query) => {
   if (data === 'restart') {
     bot.answerCallbackQuery(query.id);
     sessions[chatId] = { step: 'awaiting_colors' };
-    bot.sendMessage(chatId,
-      `🕯️ Ketik pola candle baru (5–20):\nContoh: \`GRGRGRGRGRG\``,
-      { parse_mode: 'Markdown' }
-    );
+    bot.sendMessage(chatId, `🕯️ Ketik pola candle baru (5–20):\nContoh: \`GRGRGRGRGRG\``, { parse_mode: 'Markdown' });
   }
 });
 
