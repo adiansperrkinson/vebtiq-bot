@@ -126,12 +126,31 @@ async function getForecast(colors, forecastLength) {
     const result = await resultPage.evaluate(() => {
       const bodyText = document.body.innerText;
 
-      // Prediksi: cari pola "#11 GREEN" atau "#11 RED"
+      // Prediksi: cari semua kemunculan GREEN/RED di bagian hasil
       const predictions = [];
-      const predRegex = /#(\d+)[^\n]*(GREEN|RED)/gi;
+
+      // Coba cari pola "#11 ... GREEN" atau "#11 ... RED" (dengan karakter apapun di tengah)
+      const predRegex1 = /#(\d+)[\s\S]{0,30}?(GREEN|RED)/gi;
       let match;
-      while ((match = predRegex.exec(bodyText)) !== null) {
+      while ((match = predRegex1.exec(bodyText)) !== null) {
         predictions.push({ candle: match[1], color: match[2].toUpperCase() });
+      }
+
+      // Fallback: kalau tidak ketemu, cari di sekitar teks "Next ... Candle(s) Forecast"
+      if (predictions.length === 0) {
+        const forecastSection = bodyText.match(/Next[\s\S]{0,200}?(GREEN|RED)/i);
+        if (forecastSection) {
+          predictions.push({ candle: '?', color: forecastSection[1].toUpperCase() });
+        }
+      }
+
+      // Fallback 2: ambil semua GREEN/RED yang muncul setelah kata "Forecast"
+      if (predictions.length === 0) {
+        const afterForecast = bodyText.split(/Forecast Result/i)[1] || bodyText;
+        const colorMatches = afterForecast.match(/\b(GREEN|RED)\b/gi) || [];
+        colorMatches.forEach((color, i) => {
+          predictions.push({ candle: String(i + 1), color: color.toUpperCase() });
+        });
       }
 
       // Confidence
@@ -165,9 +184,10 @@ function formatResult(result, inputColors, forecastLength) {
 
   if (predictions.length > 0) {
     msg += `🔮 *Prediksi ${forecastLength} Candle ke Depan:*\n`;
-    predictions.slice(0, forecastLength).forEach(p => {
+    predictions.slice(0, forecastLength).forEach((p, i) => {
       const emoji = p.color === 'GREEN' ? '🟢' : '🔴';
-      msg += `Candle #${p.candle}: ${emoji} *${p.color}*\n`;
+      const label = p.candle === '?' ? `Candle ${i + 1}` : `Candle #${p.candle}`;
+      msg += `${label}: ${emoji} *${p.color}*\n`;
     });
   } else {
     msg += `⚠️ Tidak bisa parse hasil. Coba lagi.\n`;
