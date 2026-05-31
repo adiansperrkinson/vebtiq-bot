@@ -183,6 +183,11 @@ async function getForecast(colors, forecastLength) {
       const matchingMatch = bodyText.match(/([\d,]+)\s*matching patterns/i);
       const matchingCount = matchingMatch ? matchingMatch[1] : null;
 
+      // DEBUG: log teks mentah halaman hasil
+      console.log('=== RAW RESULT TEXT ===');
+      console.log(bodyText.slice(0, 3000));
+      console.log('=== END RAW TEXT ===');
+
       return { predictions, confidence, matchingCount };
     });
 
