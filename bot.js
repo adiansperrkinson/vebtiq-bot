@@ -12,28 +12,6 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sessions = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER KEYBOARD
-// ─────────────────────────────────────────────────────────────────────────────
-function showPattern(colors) {
-  return colors.map(c => c === 'green' ? '🟢' : '🔴').join('');
-}
-
-function buildCandleKeyboard(current, total) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '🟢 GREEN', callback_data: 'candle_green' },
-        { text: '🔴 RED',   callback_data: 'candle_red'   },
-      ],
-      [
-        { text: '↩️ Hapus Terakhir', callback_data: 'candle_undo' },
-        { text: `✅ Selesai (${current}/${total})`, callback_data: 'candle_done' },
-      ],
-    ],
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // FUNGSI UTAMA
 // ─────────────────────────────────────────────────────────────────────────────
 async function getForecast(colors, forecastLength) {
@@ -98,7 +76,7 @@ async function getForecast(colors, forecastLength) {
 
     await new Promise(r => setTimeout(r, 500));
 
-    // ── Pasang listener untuk tab baru SEBELUM klik tombol ──
+    // ── Pasang listener tab baru SEBELUM klik ──
     const newPagePromise = new Promise(resolve => {
       browser.once('targetcreated', async (target) => {
         const newPage = await target.page();
@@ -118,20 +96,19 @@ async function getForecast(colors, forecastLength) {
       }
     });
 
-    // ── Tunggu tab baru terbuka (max 15 detik) ──
+    // ── Tunggu tab baru ──
     let resultPage;
     try {
       resultPage = await Promise.race([
         newPagePromise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Tab baru tidak muncul')), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
       ]);
     } catch {
-      // Kalau tidak ada tab baru, cek apakah hasil sudah muncul di halaman yang sama
       resultPage = page;
     }
 
-    // ── Tunggu halaman hasil selesai load ──
     await resultPage.setViewport({ width: 1280, height: 900 });
+
     try {
       await resultPage.waitForFunction(
         () => document.body.innerText.includes('Confidence') ||
@@ -148,25 +125,21 @@ async function getForecast(colors, forecastLength) {
     const result = await resultPage.evaluate(() => {
       const bodyText = document.body.innerText;
 
-      // Prediksi: cari semua kemunculan GREEN/RED di bagian hasil
+      // Prediksi cara 1: cari "#11 ... GREEN/RED"
       const predictions = [];
-
-      // Coba cari pola "#11 ... GREEN" atau "#11 ... RED" (dengan karakter apapun di tengah)
       const predRegex1 = /#(\d+)[\s\S]{0,30}?(GREEN|RED)/gi;
       let match;
       while ((match = predRegex1.exec(bodyText)) !== null) {
         predictions.push({ candle: match[1], color: match[2].toUpperCase() });
       }
 
-      // Fallback: kalau tidak ketemu, cari di sekitar teks "Next ... Candle(s) Forecast"
+      // Prediksi cara 2: cari di sekitar "Next ... Forecast"
       if (predictions.length === 0) {
-        const forecastSection = bodyText.match(/Next[\s\S]{0,200}?(GREEN|RED)/i);
-        if (forecastSection) {
-          predictions.push({ candle: '?', color: forecastSection[1].toUpperCase() });
-        }
+        const section = bodyText.match(/Next[\s\S]{0,200}?(GREEN|RED)/i);
+        if (section) predictions.push({ candle: '?', color: section[1].toUpperCase() });
       }
 
-      // Fallback 2: ambil semua GREEN/RED yang muncul setelah kata "Forecast"
+      // Prediksi cara 3: semua GREEN/RED setelah "Forecast Result"
       if (predictions.length === 0) {
         const afterForecast = bodyText.split(/Forecast Result/i)[1] || bodyText;
         const colorMatches = afterForecast.match(/\b(GREEN|RED)\b/gi) || [];
@@ -182,11 +155,6 @@ async function getForecast(colors, forecastLength) {
       // Matching patterns
       const matchingMatch = bodyText.match(/([\d,]+)\s*matching patterns/i);
       const matchingCount = matchingMatch ? matchingMatch[1] : null;
-
-      // DEBUG: log teks mentah halaman hasil
-      console.log('=== RAW RESULT TEXT ===');
-      console.log(bodyText.slice(0, 3000));
-      console.log('=== END RAW TEXT ===');
 
       return { predictions, confidence, matchingCount };
     });
@@ -251,7 +219,9 @@ function parseColors(input) {
   return mapped;
 }
 
-
+function showPattern(colors) {
+  return colors.map(c => c.includes('green') ? '🟢' : '🔴').join('');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BOT COMMANDS
@@ -268,182 +238,42 @@ bot.onText(/\/cancel/, (msg) => {
   bot.sendMessage(msg.chat.id, '✅ Dibatalkan. Ketik /forecast untuk mulai lagi.');
 });
 
-bot.onText(/\/forecast/, async (msg) => {
-  const chatId = msg.chat.id;
-  sessions[chatId] = { step: 'choosing_length' };
-
-  bot.sendMessage(chatId,
-    `🕯️ *Berapa candle yang mau kamu input?*\n\nPilih jumlah pola candle (5–20):`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '5',  callback_data: 'len_5'  },
-            { text: '6',  callback_data: 'len_6'  },
-            { text: '7',  callback_data: 'len_7'  },
-            { text: '8',  callback_data: 'len_8'  },
-            { text: '9',  callback_data: 'len_9'  },
-            { text: '10', callback_data: 'len_10' },
-          ],
-          [
-            { text: '11', callback_data: 'len_11' },
-            { text: '12', callback_data: 'len_12' },
-            { text: '13', callback_data: 'len_13' },
-            { text: '14', callback_data: 'len_14' },
-            { text: '15', callback_data: 'len_15' },
-          ],
-          [
-            { text: '16', callback_data: 'len_16' },
-            { text: '17', callback_data: 'len_17' },
-            { text: '18', callback_data: 'len_18' },
-            { text: '19', callback_data: 'len_19' },
-            { text: '20', callback_data: 'len_20' },
-          ],
-        ],
-      },
-    }
+bot.onText(/\/forecast/, (msg) => {
+  sessions[msg.chat.id] = { step: 'awaiting_colors' };
+  bot.sendMessage(msg.chat.id,
+    `🕯️ *Masukkan Pola Candle*\n\n` +
+    `Ketik *5–20* warna candle.\n\n` +
+    `Contoh 10 candle:\n` +
+    `\`green-red-green-red-green-red-green-red-green-red\`\n\n` +
+    `Atau singkatan: \`GRGRGRGRGRG\``,
+    { parse_mode: 'Markdown' }
   );
 });
 
-// (text input tidak dipakai lagi — semua pakai tombol)
-
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const msgId = query.message.message_id;
-  const data = query.data;
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  if (!text || text.startsWith('/')) return;
   const session = sessions[chatId];
+  if (!session) return;
 
-  // ── Pilih jumlah candle ──
-  if (data.startsWith('len_')) {
-    const totalLen = parseInt(data.replace('len_', ''));
-    bot.answerCallbackQuery(query.id);
-
-    sessions[chatId] = {
-      step: 'picking_colors',
-      totalLen,
-      colors: [],
-    };
-
-    await bot.editMessageText(
-      `🕯️ *Pilih warna candle satu per satu*\n\n` +
-      `Candle ke-*1* dari *${totalLen}*:\n\n` +
-      `(belum ada input)`,
-      {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: 'Markdown',
-        reply_markup: buildCandleKeyboard(0, totalLen),
-      }
+  if (session.step === 'awaiting_colors') {
+    const colors = parseColors(text);
+    if (!colors) return bot.sendMessage(chatId,
+      `❌ Format tidak dikenali.\n\nContoh: \`green-red-green-red-green\` atau \`GRGRG\``,
+      { parse_mode: 'Markdown' }
     );
-    return;
-  }
-
-  // ── Pilih warna candle (GREEN/RED) ──
-  if (data === 'candle_green' || data === 'candle_red') {
-    if (!session || session.step !== 'picking_colors') {
-      bot.answerCallbackQuery(query.id, { text: 'Sesi expired. Ketik /forecast lagi.' });
-      return;
-    }
-
-    const color = data === 'candle_green' ? 'green' : 'red';
-    session.colors.push(color);
-    bot.answerCallbackQuery(query.id, { text: color === 'green' ? '🟢 GREEN' : '🔴 RED' });
-
-    const current = session.colors.length;
-    const total = session.totalLen;
-    const pattern = showPattern(session.colors);
-
-    if (current >= total) {
-      // Semua candle sudah dipilih → tanya forecast length
-      session.step = 'awaiting_forecast_length';
-      await bot.editMessageText(
-        `✅ *Pola lengkap (${total} candles):*\n${pattern}\n\nMau prediksi berapa candle ke depan?`,
-        {
-          chat_id: chatId,
-          message_id: msgId,
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              { text: '1️⃣', callback_data: 'fl_1' },
-              { text: '2️⃣', callback_data: 'fl_2' },
-              { text: '3️⃣', callback_data: 'fl_3' },
-              { text: '4️⃣', callback_data: 'fl_4' },
-              { text: '5️⃣', callback_data: 'fl_5' },
-            ]],
-          },
-        }
-      );
-    } else {
-      // Masih ada candle yang belum dipilih
-      await bot.editMessageText(
-        `🕯️ *Pilih warna candle satu per satu*\n\n` +
-        `Candle ke-*${current + 1}* dari *${total}*:\n\n` +
-        `${pattern} ${'⬜'.repeat(total - current)}`,
-        {
-          chat_id: chatId,
-          message_id: msgId,
-          parse_mode: 'Markdown',
-          reply_markup: buildCandleKeyboard(current, total),
-        }
-      );
-    }
-    return;
-  }
-
-  // ── Undo (hapus candle terakhir) ──
-  if (data === 'candle_undo') {
-    if (!session || session.step !== 'picking_colors') {
-      bot.answerCallbackQuery(query.id, { text: 'Tidak ada yang bisa dihapus.' });
-      return;
-    }
-    if (session.colors.length === 0) {
-      bot.answerCallbackQuery(query.id, { text: 'Belum ada candle yang dipilih!' });
-      return;
-    }
-
-    session.colors.pop();
-    bot.answerCallbackQuery(query.id, { text: '↩️ Dihapus' });
-
-    const current = session.colors.length;
-    const total = session.totalLen;
-    const pattern = current > 0 ? showPattern(session.colors) : '(belum ada input)';
-
-    await bot.editMessageText(
-      `🕯️ *Pilih warna candle satu per satu*\n\n` +
-      `Candle ke-*${current + 1}* dari *${total}*:\n\n` +
-      `${pattern}${current > 0 ? ' ' : ''}${'⬜'.repeat(total - current)}`,
-      {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: 'Markdown',
-        reply_markup: buildCandleKeyboard(current, total),
-      }
+    if (colors.length < 5 || colors.length > 20) return bot.sendMessage(chatId,
+      `❌ Harus *5–20* candle. Kamu input *${colors.length}* candle.`,
+      { parse_mode: 'Markdown' }
     );
-    return;
-  }
 
-  // ── Done (selesai lebih awal, minimal 5) ──
-  if (data === 'candle_done') {
-    if (!session || session.step !== 'picking_colors') {
-      bot.answerCallbackQuery(query.id);
-      return;
-    }
-    if (session.colors.length < 5) {
-      bot.answerCallbackQuery(query.id, { text: `Minimal 5 candle! Baru ${session.colors.length}.` });
-      return;
-    }
+    sessions[chatId].colors = colors;
+    sessions[chatId].step = 'awaiting_forecast_length';
 
-    bot.answerCallbackQuery(query.id);
-    session.totalLen = session.colors.length;
-    session.step = 'awaiting_forecast_length';
-
-    const pattern = showPattern(session.colors);
-    await bot.editMessageText(
-      `✅ *Pola lengkap (${session.colors.length} candles):*\n${pattern}\n\nMau prediksi berapa candle ke depan?`,
+    bot.sendMessage(chatId,
+      `✅ *Pola diterima (${colors.length} candles):*\n${showPattern(colors)}\n\nMau prediksi berapa candle ke depan?`,
       {
-        chat_id: chatId,
-        message_id: msgId,
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[
@@ -456,19 +286,23 @@ bot.on('callback_query', async (query) => {
         },
       }
     );
-    return;
   }
+});
 
-  // ── Pilih forecast length ──
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
   if (data.startsWith('fl_')) {
     const forecastLength = parseInt(data.replace('fl_', ''));
-    if (!session?.colors || session.colors.length < 5) {
+    const session = sessions[chatId];
+    if (!session?.colors) {
       bot.answerCallbackQuery(query.id, { text: 'Sesi expired. Ketik /forecast lagi.' });
       return;
     }
 
     bot.answerCallbackQuery(query.id, { text: `⏳ Memproses...` });
-    const savedColors = [...session.colors];
+    const savedColors = session.colors;
     delete sessions[chatId];
 
     const loadingMsg = await bot.sendMessage(chatId,
@@ -491,47 +325,15 @@ bot.on('callback_query', async (query) => {
       await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
       bot.sendMessage(chatId, `❌ Error: ${err.message}\n\nCoba lagi: /forecast`);
     }
-    return;
   }
 
-  // ── Restart ──
   if (data === 'restart') {
     bot.answerCallbackQuery(query.id);
-    delete sessions[chatId];
-
+    sessions[chatId] = { step: 'awaiting_colors' };
     bot.sendMessage(chatId,
-      `🕯️ *Berapa candle yang mau kamu input?*`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '5',  callback_data: 'len_5'  },
-              { text: '6',  callback_data: 'len_6'  },
-              { text: '7',  callback_data: 'len_7'  },
-              { text: '8',  callback_data: 'len_8'  },
-              { text: '9',  callback_data: 'len_9'  },
-              { text: '10', callback_data: 'len_10' },
-            ],
-            [
-              { text: '11', callback_data: 'len_11' },
-              { text: '12', callback_data: 'len_12' },
-              { text: '13', callback_data: 'len_13' },
-              { text: '14', callback_data: 'len_14' },
-              { text: '15', callback_data: 'len_15' },
-            ],
-            [
-              { text: '16', callback_data: 'len_16' },
-              { text: '17', callback_data: 'len_17' },
-              { text: '18', callback_data: 'len_18' },
-              { text: '19', callback_data: 'len_19' },
-              { text: '20', callback_data: 'len_20' },
-            ],
-          ],
-        },
-      }
+      `🕯️ Ketik pola candle baru (5–20):\nContoh: \`GRGRGRGRGRG\``,
+      { parse_mode: 'Markdown' }
     );
-    return;
   }
 });
 
