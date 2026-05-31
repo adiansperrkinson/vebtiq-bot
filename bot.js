@@ -12,425 +12,176 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const sessions = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FUNGSI UTAMA
+// FUNGSI UTAMA: Buka VEBTiQ, isi form, ambil hasil sebagai teks
 // ─────────────────────────────────────────────────────────────────────────────
-async function getForecast(colors, forecastLength, chatId) {
+async function getForecast(colors, forecastLength) {
   const browser = await puppeteer.launch({
     headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
-
-  const sendStep = async (page, stepName) => {
-    const ss = await page.screenshot({
-      type: 'png',
-      fullPage: true,
-    });
-
-    await bot.sendPhoto(chatId, ss, {
-      caption: `🔍 ${stepName}`,
-    });
-  };
 
   try {
     const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
-    await page.setViewport({
-      width: 1366,
-      height: 900,
+    await page.goto('https://vebtiq.com/flexible-pattern/forecast', {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
     });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
-    );
-
-    // ─────────────────────────────
-    // BUKA WEBSITE
-    // ─────────────────────────────
-    await page.goto(
-      'https://vebtiq.com/flexible-pattern/forecast',
-      {
-        waitUntil: 'networkidle2',
-        timeout: 60000,
-      }
-    );
-
-    await sendStep(page, 'Halaman terbuka');
+    await new Promise(r => setTimeout(r, 1000));
 
     const patternLength = colors.length;
+    const colorString = colors.join('-');
 
-    // ─────────────────────────────
-    // PILIH PATTERN LENGTH
-    // ─────────────────────────────
+    // ── Pilih Pattern Length (select pertama) ──
     await page.evaluate((pLen) => {
-      const selects = [...document.querySelectorAll('select')];
-
-      for (const sel of selects) {
-        const found = [...sel.options].find(
-          o =>
-            o.value == pLen ||
-            o.textContent.includes(String(pLen))
-        );
-
-        if (found) {
-          sel.value = found.value;
-
-          sel.dispatchEvent(
-            new Event('input', { bubbles: true })
-          );
-
-          sel.dispatchEvent(
-            new Event('change', { bubbles: true })
-          );
-
-          break;
+      const sel = document.querySelectorAll('select')[0];
+      if (!sel) return;
+      for (const opt of sel.options) {
+        if (opt.value == pLen || opt.text.trim().startsWith(String(pLen))) {
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return;
         }
       }
     }, patternLength);
 
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 800));
 
-    await sendStep(
-      page,
-      `Pattern Length ${patternLength}`
-    );
-
-    // ─────────────────────────────
-    // INPUT WARNA CANDLE
-    // ─────────────────────────────
-    const colorInputs = await page.$$(
-      'input[type="text"]'
-    );
-
-    if (colorInputs.length >= patternLength) {
-      for (let i = 0; i < patternLength; i++) {
-        const input = colorInputs[i];
-
-        await input.click({ clickCount: 3 });
-
-        await page.keyboard.press('Backspace');
-
-        await input.type(colors[i], {
-          delay: 100,
-        });
-
-        await new Promise(r => setTimeout(r, 2000));
+    // ── Pilih Forecast Length (select kedua) ──
+    await page.evaluate((fLen) => {
+      const sel = document.querySelectorAll('select')[1];
+      if (!sel) return;
+      for (const opt of sel.options) {
+        if (opt.value == fLen || opt.text.trim().startsWith(String(fLen))) {
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return;
+        }
       }
-    } else {
-      // fallback
-      const allSelects = await page.$$('select');
+    }, forecastLength);
 
-      let colorIndex = 0;
+    await new Promise(r => setTimeout(r, 500));
 
-      for (const sel of allSelects) {
-        const options = await sel.$$eval(
-          'option',
-          opts =>
-            opts.map(o =>
-              o.textContent.toLowerCase()
-            )
-        );
+    // ── Isi textarea warna candle ──
+    await page.evaluate((colorStr) => {
+      const textarea = document.querySelector('textarea');
+      if (textarea) {
+        textarea.value = colorStr;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, colorString);
 
-async function getForecast(colors, forecastLength, chatId) {
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
-  });
+    await new Promise(r => setTimeout(r, 500));
 
-  const sendStep = async (page, stepName) => {
+    // ── Klik "Forecast Next Candles" ──
+    await page.evaluate(() => {
+      const buttons = document.querySelectorAll('button, input[type="submit"]');
+      for (const btn of buttons) {
+        const text = (btn.textContent || btn.value || '').toLowerCase();
+        if (text.includes('forecast next') || text.includes('forecast')) {
+          btn.click();
+          return;
+        }
+      }
+    });
+
+    // ── Tunggu halaman hasil muncul ──
+    // Tunggu sampai ada teks "Forecast Result" atau "Confidence"
     try {
-      const ss = await page.screenshot({
-        type: 'png',
-        fullPage: false,
-      });
-
-      await bot.sendPhoto(chatId, ss, {
-        caption: `🔍 ${stepName}`,
-      });
-
-    } catch (err) {
-      console.error('Screenshot gagal:', err.message);
-    }
-  };
-
-  try {
-    const page = await browser.newPage();
-
-    await page.setViewport({
-      width: 1366,
-      height: 900,
-    });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
-    );
-
-    // ─────────────────────────────
-    // BUKA WEBSITE
-    // ─────────────────────────────
-    await page.goto(
-      'https://vebtiq.com/flexible-pattern/forecast',
-      {
-        waitUntil: 'networkidle2',
-        timeout: 60000,
-      }
-    );
-
-    await sendStep(page, 'Halaman terbuka');
-
-    const patternLength = colors.length;
-
-    // ─────────────────────────────
-    // PILIH PATTERN LENGTH
-    // ─────────────────────────────
-    await page.evaluate((pLen) => {
-      const selects = [...document.querySelectorAll('select')];
-
-      for (const sel of selects) {
-        const found = [...sel.options].find(
-          o =>
-            o.value == pLen ||
-            o.textContent.includes(String(pLen))
-        );
-
-        if (found) {
-          sel.value = found.value;
-
-          sel.dispatchEvent(
-            new Event('input', { bubbles: true })
-          );
-
-          sel.dispatchEvent(
-            new Event('change', { bubbles: true })
-          );
-
-          break;
-        }
-      }
-    }, patternLength);
-
-    await new Promise(r => setTimeout(r, 2000));
-
-    await sendStep(
-      page,
-      `Pattern Length ${patternLength}`
-    );
-
-    // ─────────────────────────────
-    // INPUT WARNA CANDLE
-    // ─────────────────────────────
-    const colorInputs = await page.$$(
-      'input[type="text"]'
-    );
-
-    if (colorInputs.length >= patternLength) {
-
-      for (let i = 0; i < patternLength; i++) {
-
-        const input = colorInputs[i];
-
-        await input.click({ clickCount: 3 });
-
-        await page.keyboard.press('Backspace');
-
-        await input.type(colors[i], {
-          delay: 100,
-        });
-
-        await new Promise(r => setTimeout(r, 150));
-      }
-
-    } else {
-
-      // fallback pakai select
-      const allSelects = await page.$$('select');
-
-      let colorIndex = 0;
-
-      for (const sel of allSelects) {
-
-        const options = await sel.$$eval(
-          'option',
-          opts =>
-            opts.map(o =>
-              o.textContent.toLowerCase()
-            )
-        );
-
-        if (
-          options.includes('green') ||
-          options.includes('red')
-        ) {
-
-          if (colors[colorIndex]) {
-
-            await sel.select(colors[colorIndex]);
-
-            colorIndex++;
-          }
-        }
-      }
-    }
-
-    await new Promise(r => setTimeout(r, 1500));
-
-    await sendStep(
-      page,
-      'Warna candle sudah diisi'
-    );
-
-    // ─────────────────────────────
-    // FORECAST LENGTH
-    // ─────────────────────────────
-    const radios = await page.$$(
-      'input[type="radio"]'
-    );
-
-    let radioClicked = false;
-
-    for (const radio of radios) {
-
-      const value = await page.evaluate(
-        el => el.value,
-        radio
+      await page.waitForFunction(
+        () => document.body.innerText.includes('Confidence') || 
+              document.body.innerText.includes('Forecast Result'),
+        { timeout: 15000 }
       );
-
-      if (String(value) === String(forecastLength)) {
-
-        await radio.click();
-
-        radioClicked = true;
-
-        break;
-      }
-    }
-
-    if (!radioClicked) {
-
-      const selects = await page.$$('select');
-
-      for (const sel of selects) {
-
-        const options = await sel.$$eval(
-          'option',
-          opts =>
-            opts.map(o => ({
-              value: o.value,
-              text: o.textContent,
-            }))
-        );
-
-        const found = options.find(
-          o =>
-            o.value == forecastLength ||
-            o.text.includes(
-              `${forecastLength}`
-            )
-        );
-
-        if (found) {
-
-          await sel.select(found.value);
-
-          break;
-        }
-      }
+    } catch {
+      await new Promise(r => setTimeout(r, 8000)); // fallback tunggu 8 detik
     }
 
     await new Promise(r => setTimeout(r, 1000));
 
-    await sendStep(
-      page,
-      `Forecast Length ${forecastLength}`
-    );
+    // ── Ekstrak hasil dari halaman ──
+    const result = await page.evaluate(() => {
+      const bodyText = document.body.innerText;
 
-    // ─────────────────────────────
-    // CARI & KLIK TOMBOL FORECAST
-    // ─────────────────────────────
-    const buttons = await page.$$('button');
-
-    let clicked = false;
-
-    for (const btn of buttons) {
-
-      const text = await page.evaluate(
-        el => el.innerText.toLowerCase(),
-        btn
-      );
-
-      console.log('BUTTON:', text);
-
-      if (
-        text.includes('forecast') ||
-        text.includes('predict') ||
-        text.includes('next candle')
-      ) {
-
-        await btn.evaluate(el => {
-          el.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center',
-          });
-        });
-
-        await new Promise(r => setTimeout(r, 1000));
-
-        await btn.click();
-
-        clicked = true;
-
-        console.log(
-          '✅ Forecast button clicked'
-        );
-
-        break;
+      // Ambil semua prediksi candle (GREEN/RED per candle)
+      // Dari tampilan: "#11 ↑ GREEN" atau "#11 ↓ RED"
+      const predictions = [];
+      const predRegex = /#(\d+)\s*[\u2191\u2193↑↓]?\s*(GREEN|RED)/gi;
+      let match;
+      while ((match = predRegex.exec(bodyText)) !== null) {
+        predictions.push({ candle: match[1], color: match[2].toUpperCase() });
       }
-    }
 
-    if (!clicked) {
+      // Confidence
+      const confMatch = bodyText.match(/Confidence[:\s]+([\d.]+)%/i);
+      const confidence = confMatch ? confMatch[1] : null;
 
-      throw new Error(
-        'Tombol Forecast tidak ditemukan'
-      );
-    }
+      // Jumlah matching patterns
+      const matchingMatch = bodyText.match(/([\d,]+)\s*matching patterns/i);
+      const matchingCount = matchingMatch ? matchingMatch[1] : null;
 
-    // ─────────────────────────────
-    // TUNGGU HASIL
-    // ─────────────────────────────
-    await new Promise(r => setTimeout(r, 7000));
+      // Judul hasil (e.g. "Forecast Result (10+1 Pattern)")
+      const titleMatch = bodyText.match(/Forecast Result[^\n]*/i);
+      const title = titleMatch ? titleMatch[0].trim() : null;
 
-    await page.evaluate(() => {
-      window.scrollBy(0, 700);
+      return { predictions, confidence, matchingCount, title, raw: bodyText.slice(0, 2000) };
     });
 
-    await new Promise(r => setTimeout(r, 1500));
-
-    await sendStep(
-      page,
-      '✅ HASIL FORECAST'
-    );
-
-    return true;
-
-  } catch (err) {
-
-    console.error(err);
-
-    throw err;
+    return result;
 
   } finally {
-
     await browser.close();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FORMAT HASIL JADI PESAN TELEGRAM
+// ─────────────────────────────────────────────────────────────────────────────
+function formatResult(result, inputColors, forecastLength) {
+  // Filter prediksi yang relevan saja (nomor candle > inputColors.length)
+  const inputLen = inputColors.length;
+  const predictions = result.predictions.filter(p => parseInt(p.candle) > inputLen);
+
+  let msg = `📊 *Hasil VEBTiQ Forecast*\n\n`;
+  msg += `📥 *Input (${inputLen} candles):*\n`;
+  msg += inputColors.map(c => c.includes('green') ? '🟢' : '🔴').join('') + '\n\n';
+
+  if (predictions.length > 0) {
+    msg += `🔮 *Prediksi ${forecastLength} Candle ke Depan:*\n`;
+    predictions.slice(0, forecastLength).forEach(p => {
+      const emoji = p.color === 'GREEN' ? '🟢' : '🔴';
+      msg += `Candle #${p.candle}: ${emoji} *${p.color}*\n`;
+    });
+  } else {
+    // Fallback: cari GREEN/RED sederhana dari raw text bagian bawah
+    const lines = result.raw.split('\n').filter(l => l.trim());
+    const colorLines = lines.filter(l => /^(GREEN|RED)$/i.test(l.trim()));
+    if (colorLines.length > 0) {
+      msg += `🔮 *Prediksi:*\n`;
+      colorLines.slice(0, forecastLength).forEach((l, i) => {
+        const color = l.trim().toUpperCase();
+        const emoji = color === 'GREEN' ? '🟢' : '🔴';
+        msg += `Candle ${i + 1}: ${emoji} *${color}*\n`;
+      });
+    } else {
+      msg += `⚠️ Tidak bisa parse hasil otomatis.\n`;
+    }
+  }
+
+  if (result.confidence) {
+    const confNum = parseFloat(result.confidence);
+    const confBar = confNum >= 60 ? '🟩' : confNum >= 50 ? '🟨' : '🟥';
+    msg += `\n${confBar} *Confidence: ${result.confidence}%*`;
+  }
+
+  if (result.matchingCount) {
+    msg += `\n🔍 *Matching patterns: ${result.matchingCount}*`;
+  }
+
+  return msg;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,22 +294,17 @@ bot.on('callback_query', async (query) => {
     delete sessions[chatId];
 
     const loadingMsg = await bot.sendMessage(chatId,
-      `⏳ *Sedang memproses...*\n\n` +
-      `${showPattern(savedColors)}\n\n` +
-      `_Mohon tunggu sekitar 20–30 detik..._`,
+      `⏳ *Sedang analisis di VEBTiQ...*\n\n${showPattern(savedColors)}\n\n_Tunggu sekitar 20–30 detik..._`,
       { parse_mode: 'Markdown' }
     );
 
     try {
-      const screenshot = await getForecast(savedColors, forecastLength, chatId);
-
+      const result = await getForecast(savedColors, forecastLength);
       await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
-      await bot.sendPhoto(chatId, screenshot, {
-        caption:
-          `📊 *Hasil VEBTiQ Forecast*\n` +
-          `Input: ${showPattern(savedColors)} (${savedColors.length} candles)\n` +
-          `Prediksi: ${forecastLength} candle ke depan`,
+      const msg = formatResult(result, savedColors, forecastLength);
+
+      await bot.sendMessage(chatId, msg, {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[{ text: '🔄 Prediksi Lagi', callback_data: 'restart' }]]
